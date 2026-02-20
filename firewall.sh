@@ -1,79 +1,96 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Ensure we run as root
-if [ "$(id -u)" != "0" ]; then
-  echo "ERROR: This script must be run as root!"
-  exit 1
+# ================= CONFIGURATION =================
+# Your internal subnet (The "Blue Team LAN" from the diagram)
+INTERNAL_NET="192.168.0.0/16" 
+# =================================================
+
+echo "=== NCAE HARDENING: Host Firewall Deployer ==="
+echo "Select the role of THIS machine:"
+echo "1) Web Server (.5)"
+echo "2) Database Server (.7)"
+echo "3) DNS Server (.12)"
+echo "4) Generic/Backup (SSH Only)"
+echo "5) FLUSH ALL (Reset to Open - Emergency Button)"
+read -p "Selection [1-5]: " ROLE
+
+# --- 1. FLUSH EXISTING RULES ---
+# Clear all current rules to start fresh
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+
+if [ "$ROLE" == "5" ]; then
+    echo " [!] Firewall Flushed. All traffic allowed."
+    iptables -P INPUT ACCEPT
+    iptables -P FORWARD ACCEPT
+    iptables -P OUTPUT ACCEPT
+    exit 0
 fi
 
-read -p "Enter TCP ports to allow (space-separated, e.g. 22 80 443): " PORTS
+echo " [*] Applying Base Policies..."
 
-which iptables >/dev/null 2>&1
-HAS_IPTABLES=$?
+# --- 2. BASE POLICIES ---
+# Drop everything by default
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT # Allow outbound for now (updates/scoring checks)
 
-which ipfw >/dev/null 2>&1
-HAS_IPFW=$?
+# --- 3. UNIVERSAL ALLOW RULES ---
+iptables -A INPUT -i lo -j ACCEPT
 
-if [ $HAS_IPTABLES -ne 0 ] && [ $HAS_IPFW -ne 0 ]; then
-  echo "ERROR: Neither 'iptables' nor 'ipfw' were found on this system."
-  echo "This script supports only:"
-  echo "  - Linux (with iptables)"
-  echo "  - FreeBSD (with ipfw)."
-  exit 1
-fi
+# Allow Established/Related (If we asked for it, allow the reply)
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-apply_firewall_rules() {
-  while true; do
-    if [ $HAS_IPTABLES -eq 0 ]; then
-      echo "[+] Flushing iptables rules..."
-      iptables -F
-      iptables -X
-      iptables -t nat -F
-      iptables -t nat -X
-      iptables -t mangle -F
-      iptables -t mangle -X
+# Allow ICMP (Ping) - Required for "Router ICMP Ping" scoring? 
+# Usually good to allow internal ping for debugging.
+iptables -A INPUT -p icmp -j ACCEPT
 
-      echo "[+] Setting default policies (DROP incoming, DROP forwarding, ALLOW outgoing)..."
-      iptables -P INPUT DROP
-      iptables -P FORWARD DROP
-      iptables -P OUTPUT ACCEPT
+# --- 4. SSH ACCESS (INTERNAL ONLY) ---
+# Scoring checks SSH from "Internal Network"
+# We allow SSH only from the 192.168.x.x range.
+iptables -A INPUT -p tcp --dport 22 -s $INTERNAL_NET -j ACCEPT
+echo " [+] SSH allowed from $INTERNAL_NET only."
 
-      echo "[+] Allowing loopback interface traffic..."
-      iptables -A INPUT -i lo -j ACCEPT
+# --- 5. ROLE SPECIFIC RULES ---
+case $ROLE in
+    1) # Web Server
+        echo " [+] Configuring WEB Server Rules..."
+        # Allow HTTP (80) and HTTPS (443) from ANYWHERE
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        ;;
+    2) # Database Server
+        echo " [+] Configuring DB Server Rules..."
+        # Allow MySQL (3306) and Postgres (5432)
+        # Router forwards these from WAN, so we must allow from ANY IP
+        iptables -A INPUT -p tcp --dport 3306 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 5432 -j ACCEPT
+        ;;
+    3) # DNS Server
+        echo " [+] Configuring DNS Server Rules..."
+        # Allow DNS (53) UDP and TCP
+        iptables -A INPUT -p udp --dport 53 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 53 -j ACCEPT
+        ;;
+    4) # Generic
+        echo " [+] Configuring Generic Rules (SSH Only)..."
+        # No extra ports needed
+        ;;
+    *)
+        echo "Invalid selection."
+        exit 1
+        ;;
+esac
 
-      echo "[+] Allowing established and related incoming traffic..."
-      iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# --- 6. LOGGING (OPTIONAL) ---
+# Log dropped packets (limit to prevent log spam)
+# Helpful to see if the scoring engine is getting blocked
+iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables denied: " --log-level 7
 
-      echo "[+] Allowing incoming TCP on the specified ports: $PORTS"
-      for port in $PORTS; do
-        iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
-      done
-
-
-    elif [ $HAS_IPFW -eq 0 ]; then
-      echo "[+] Flushing ipfw rules..."
-      ipfw -q flush
-
-      echo "[+] Setting default deny rule..."
-      ipfw -q add 100 deny all from any to any
-
-      echo "[+] Allowing loopback traffic (rule #50)..."
-      ipfw -q add 50 allow all from any to any via lo0
-
-      echo "[+] Allowing established TCP sessions (rule #60)..."
-      ipfw -q add 60 allow tcp from any to any established
-
-      echo "[+] Allowing inbound TCP on the specified ports: $PORTS"
-      PRIO=200
-      for port in $PORTS; do
-        ipfw -q add $PRIO allow tcp from any to me dst-port "$port"
-        PRIO=$((PRIO + 1))
-      done
-    fi
-
-    echo "[+] Firewall rules applied. Sleeping 30 seconds..."
-    sleep 30
-  done
-}
-
-apply_firewall_rules
+echo "=== Firewall Configured Successfully ==="
+echo "Current Rules:"
+iptables -S
