@@ -1,0 +1,51 @@
+sudo tee /usr/local/bin/lockdown_ssh.sh << 'EOF'
+#!/bin/bash
+
+SCORING_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCcM4aDj8Y4COv+f8bd2WsrIynlbRGgDj2+q9aBeW1Umj5euxnO1vWsjfkpKnyE/ORsI6gkkME9ojAzNAPquWMh2YG+n11FB1iZl2S6yuZB7dkVQZSKpVYwRvZv2RnYDQdcVnX9oWMiGrBWEAi4jxcYykz8nunaO2SxjEwzuKdW8lnnh2BvOO9RkzmSXIIdPYgSf8bFFC7XFMfRrlMXlsxbG3u/NaFjirfvcXKexz06L6qYUzob8IBPsKGaRjO+vEdg6B4lH1lMk1JQ4GtGOJH6zePfB6Gf7rp31261VRfkpbpaDAznTzh7bgpq78E7SenatNbezLDaGq3Zra3j53u7XaSVipkW0S3YcXczhte2J9kvo6u6s094vrcQfB9YigH4KhXpCErFk08NkYAEJDdqFqXIjvzsro+2/EW1KKB9aNPSSM9EZzhYc+cBAl4+ohmEPej1m15vcpw3k+kpo1NC2rwEXIFxmvTme1A2oIZZBpgzUqfmvSPwLXF0EyfN9Lk= SCORING KEY DO NOT REMOVE"
+
+USERS="clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley"
+
+echo "[*] Removing immutable flags..."
+chattr -i /etc/ssh/sshd_config
+chattr -i /etc/ssh/ssh_config
+chattr -i /etc/passwd
+chattr -i /etc/shadow
+
+echo "[*] Updating AllowUsers in sshd_config..."
+sed -i '/^AllowUsers/d' /etc/ssh/sshd_config
+echo "AllowUsers steven $USERS" >> /etc/ssh/sshd_config
+
+echo "[*] Setting up authorized_keys for scoring users..."
+for user in $USERS; do
+    home=$(eval echo ~$user)
+    mkdir -p "$home/.ssh"
+    echo "$SCORING_KEY" > "$home/.ssh/authorized_keys"
+    chmod 700 "$home/.ssh"
+    chmod 600 "$home/.ssh/authorized_keys"
+    chown -R "$user:$user" "$home/.ssh"
+    echo "    Done: $user"
+done
+
+echo "[*] Killing unauthorized SSH sessions..."
+who | awk '{print $1}' | sort -u | while read logged_in; do
+    allowed=0
+    for user in steven $USERS; do
+        [ "$logged_in" = "$user" ] && allowed=1 && break
+    done
+    if [ $allowed -eq 0 ]; then
+        echo "    Booting: $logged_in"
+        pkill -KILL -u "$logged_in"
+    fi
+done
+
+echo "[*] Testing sshd config..."
+sshd -t && echo "[*] Config OK, restarting sshd..." && systemctl restart sshd
+
+echo "[*] Verifying SSH is listening..."
+ss -tlnp | grep :22
+
+echo "[*] Done."
+EOF
+
+sudo chmod +x /usr/local/bin/lockdown_ssh.sh
+sudo bash /usr/local/bin/lockdown_ssh.sh
