@@ -1,0 +1,150 @@
+sudo tee /usr/local/bin/find_smb_files.sh << 'EOF'
+#!/bin/bash
+
+SHARE_DIR="/mnt/files"
+FOUND=0
+MOVED=0
+
+# All target files with their expected sizes and hashes (hash=None means size match only)
+declare -A SIZES
+SIZES["addict_with_a_pen.data"]=25165824
+SIZES["air_catcher.data"]=524288000
+SIZES["anathema.data"]=524288000
+SIZES["at_the_risk_of_feeling_dumb.data"]=10485760
+SIZES["backslide.data"]=10485760
+SIZES["be_concerned.data"]=10485760
+SIZES["before_you_start_your_day.data"]=10485760
+SIZES["bounce_man.data"]=52428800
+SIZES["car_radio.data"]=52428800
+SIZES["center_mass.data"]=52428800
+SIZES["chlorine.data"]=25165824
+SIZES["christmas_saves_the_year.data"]=262144000
+SIZES["city_walls.data"]=262144000
+SIZES["cottonwood.data"]=1073741824
+SIZES["doubt.data"]=52428800
+SIZES["the_contract.data"]=968998912
+SIZES["data_dump_1.bin"]=1073741824
+SIZES["data_dump_2.bin"]=262144000
+SIZES["data_dump_3.bin"]=52428800
+SIZES["datadump.bin"]=3116482560
+SIZES[".bandito.data"]=10485760
+SIZES[".choker.data"]=262144000
+
+# Files with known hashes — these MUST match exactly
+declare -A HASHES
+HASHES["at_the_risk_of_feeling_dumb.data"]="c58bb10a4db9a1d1c844fa9e9aba66bf"
+HASHES["backslide.data"]="ba6df79b053d031f72a5f58954f4292c"
+HASHES["be_concerned.data"]="90c709ebf76504a164f51fa5c8e59526"
+HASHES["before_you_start_your_day.data"]="441fc8850d858d4c10cfdda92a32f8e7"
+HASHES[".bandito.data"]="1de54ef37508eef27672312951699dcf"
+
+echo "========================================"
+echo "     SEARCHING FOR SMB FILES"
+echo "========================================"
+
+# Build list of search directories (skip virtual filesystems)
+SEARCH_DIRS="/ "
+EXCLUDE="! -path '/proc/*' ! -path '/sys/*' ! -path '/dev/*' ! -path '/run/*' ! -path '$SHARE_DIR/*'"
+
+for filename in "${!SIZES[@]}"; do
+    expected_size=${SIZES[$filename]}
+    expected_hash=${HASHES[$filename]:-""}
+
+    # Check if file already exists and is correct in share dir
+    target="$SHARE_DIR/$filename"
+    if [ -f "$target" ]; then
+        actual_size=$(stat -c '%s' "$target")
+        if [ "$actual_size" -eq "$expected_size" ]; then
+            if [ -n "$expected_hash" ]; then
+                actual_hash=$(md5sum "$target" | awk '{print $1}')
+                if [ "$actual_hash" = "$expected_hash" ]; then
+                    echo "  [OK]    $filename already correct in $SHARE_DIR"
+                    continue
+                else
+                    echo "  [HASH]  $filename exists but hash mismatch — searching for correct version"
+                fi
+            else
+                echo "  [OK]    $filename already correct in $SHARE_DIR"
+                continue
+            fi
+        else
+            echo "  [SIZE]  $filename exists but wrong size ($actual_size vs $expected_size) — searching"
+        fi
+    else
+        echo "  [MISS]  $filename missing — searching"
+    fi
+
+    # Search for the file across filesystem
+    echo "          Searching for $filename..."
+    found_path=""
+    while IFS= read -r -d '' candidate; do
+        candidate_size=$(stat -c '%s' "$candidate" 2>/dev/null)
+
+        # Size must match
+        [ "$candidate_size" -ne "$expected_size" ] && continue
+
+        # If hash required, verify it
+        if [ -n "$expected_hash" ]; then
+            candidate_hash=$(md5sum "$candidate" | awk '{print $1}')
+            if [ "$candidate_hash" = "$expected_hash" ]; then
+                echo "          FOUND (hash match): $candidate"
+                found_path="$candidate"
+                break
+            fi
+        else
+            echo "          FOUND (size match): $candidate"
+            found_path="$candidate"
+            break
+        fi
+    done < <(find / \
+        ! -path '/proc/*' \
+        ! -path '/sys/*' \
+        ! -path '/dev/*' \
+        ! -path '/run/*' \
+        ! -path "$SHARE_DIR/*" \
+        -name "$filename" -type f -print0 2>/dev/null)
+
+    if [ -n "$found_path" ]; then
+        cp "$found_path" "$target"
+        chmod 644 "$target"
+        restorecon "$target" 2>/dev/null
+        echo "          COPIED to $SHARE_DIR/$filename"
+        ((MOVED++))
+        ((FOUND++))
+    else
+        echo "          NOT FOUND anywhere on filesystem: $filename"
+    fi
+done
+
+echo ""
+echo "========================================"
+echo "  RESULTS"
+echo "========================================"
+echo "  Files found and copied: $MOVED"
+echo ""
+echo "  Current state of $SHARE_DIR:"
+ls -lah "$SHARE_DIR"
+echo ""
+
+# Report which hash files are still wrong
+echo "  Hash verification of critical files:"
+for filename in "${!HASHES[@]}"; do
+    expected_hash=${HASHES[$filename]}
+    target="$SHARE_DIR/$filename"
+    if [ -f "$target" ]; then
+        actual_hash=$(md5sum "$target" | awk '{print $1}')
+        if [ "$actual_hash" = "$expected_hash" ]; then
+            echo "  [OK]   $filename hash matches"
+        else
+            echo "  [FAIL] $filename hash WRONG (got $actual_hash, need $expected_hash)"
+        fi
+    else
+        echo "  [MISS] $filename does not exist in $SHARE_DIR"
+    fi
+done
+
+echo "========================================"
+EOF
+
+sudo chmod +x /usr/local/bin/find_smb_files.sh
+sudo bash /usr/local/bin/find_smb_files.sh
