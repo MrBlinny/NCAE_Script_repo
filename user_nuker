@@ -1,0 +1,133 @@
+sudo tee /usr/local/bin/user_audit.sh << 'EOF'
+#!/bin/bash
+
+SCORING_USERS="clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley"
+ADMIN_USERS="steven root"
+SYSTEM_USERS="bin daemon adm lp sync shutdown halt mail operator games ftp nobody systemd-network systemd-resolve tss polkitd unbound sssd chrony sshd dbus avahi rngd"
+SCORING_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCcM4aDj8Y4COv+f8bd2WsrIynlbRGgDj2+q9aBeW1Umj5euxnO1vWsjfkpKnyE/ORsI6gkkME9ojAzNAPquWMh2YG+n11FB1iZl2S6yuZB7dkVQZSKpVYwRvZv2RnYDQdcVnX9oWMiGrBWEAi4jxcYykz8nunaO2SxjEwzuKdW8lnnh2BvOO9RkzmSXIIdPYgSf8bFFC7XFMfRrlMXlsxbG3u/NaFjirfvcXKexz06L6qYUzob8IBPsKGaRjO+vEdg6B4lH1lMk1JQ4GtGOJH6zePfB6Gf7rp31261VRfkpbpaDAznTzh7bgpq78E7SenatNbezLDaGq3Zra3j53u7XaSVipkW0S3YcXczhte2J9kvo6u6s094vrcQfB9YigH4KhXpCErFk08NkYAEJDdqFqXIjvzsro+2/EW1KKB9aNPSSM9EZzhYc+cBAl4+ohmEPej1m15vcpw3k+kpo1NC2rwEXIFxmvTme1A2oIZZBpgzUqfmvSPwLXF0EyfN9Lk= SCORING KEY DO NOT REMOVE"
+
+is_in_list() {
+    local user=$1
+    local list=$2
+    for u in $list; do
+        [ "$user" = "$u" ] && return 0
+    done
+    return 1
+}
+
+echo "========================================"
+echo "         USER AUDIT & LOCKDOWN"
+echo "========================================"
+
+# --- Step 1: Strip sudo/wheel from everyone except steven and root ---
+echo ""
+echo "[*] Stripping wheel/sudo group from all non-admin users..."
+for user in $(getent group wheel | cut -d: -f4 | tr ',' ' '); do
+    if ! is_in_list "$user" "$ADMIN_USERS"; then
+        gpasswd -d "$user" wheel 2>/dev/null
+        echo "    Removed from wheel: $user"
+    fi
+done
+
+# --- Step 2: Strip SSH authorized_keys from everyone except scoring users ---
+echo ""
+echo "[*] Stripping authorized_keys from non-scoring users..."
+for user in $(cut -d: -f1 /etc/passwd); do
+    if is_in_list "$user" "$SCORING_USERS"; then
+        continue
+    fi
+    home=$(eval echo ~$user)
+    if [ -f "$home/.ssh/authorized_keys" ]; then
+        echo "    Wiping keys: $user"
+        > "$home/.ssh/authorized_keys"
+    fi
+done
+
+# --- Step 3: Ensure scoring users have correct key ---
+echo ""
+echo "[*] Setting scoring key for all scoring users..."
+for user in $SCORING_USERS; do
+    home=$(eval echo ~$user)
+    mkdir -p "$home/.ssh"
+    echo "$SCORING_KEY" > "$home/.ssh/authorized_keys"
+    chmod 700 "$home/.ssh"
+    chmod 600 "$home/.ssh/authorized_keys"
+    chown -R "$user:$user" "$home/.ssh"
+    echo "    Key set: $user"
+done
+
+# --- Step 4: Find unknown users and ask what to do ---
+echo ""
+echo "========================================"
+echo "         UNKNOWN USER REVIEW"
+echo "========================================"
+for user in $(awk -F: '$3 >= 1000 {print $1}' /etc/passwd); do
+    if is_in_list "$user" "$SCORING_USERS" || is_in_list "$user" "$ADMIN_USERS"; then
+        continue
+    fi
+
+    echo ""
+    echo "  Unknown user: $user"
+    echo "  UID: $(id -u $user)"
+    echo "  Groups: $(groups $user)"
+    echo "  Home: $(eval echo ~$user)"
+    echo "  Shell: $(getent passwd $user | cut -d: -f7)"
+    echo "  Last login: $(last $user | head -1)"
+    echo ""
+    echo "  What do you want to do?"
+    echo "  [1] Delete user"
+    echo "  [2] Lock user"
+    echo "  [3] Keep user (no changes)"
+    echo "  [4] Lock + strip shell"
+    read -p "  Choice [1-4]: " choice
+
+    case $choice in
+        1)
+            pkill -KILL -u "$user" 2>/dev/null
+            userdel -r "$user" 2>/dev/null
+            echo "    Deleted: $user"
+            ;;
+        2)
+            usermod -L "$user"
+            pkill -KILL -u "$user" 2>/dev/null
+            echo "    Locked: $user"
+            ;;
+        3)
+            echo "    Kept: $user"
+            ;;
+        4)
+            usermod -L "$user"
+            usermod -s /sbin/nologin "$user"
+            pkill -KILL -u "$user" 2>/dev/null
+            echo "    Locked + shell stripped: $user"
+            ;;
+        *)
+            echo "    Invalid choice, skipping: $user"
+            ;;
+    esac
+done
+
+# --- Step 5: Update AllowUsers in sshd_config ---
+echo ""
+echo "[*] Updating AllowUsers in sshd_config..."
+chattr -i /etc/ssh/sshd_config
+sed -i '/^AllowUsers/d' /etc/ssh/sshd_config
+echo "AllowUsers steven $SCORING_USERS" >> /etc/ssh/sshd_config
+sshd -t && systemctl restart sshd
+echo "    sshd restarted."
+
+# --- Step 6: Kill any unauthorized active sessions ---
+echo ""
+echo "[*] Killing unauthorized active sessions..."
+who | awk '{print $1}' | sort -u | while read logged_in; do
+    if ! is_in_list "$logged_in" "$SCORING_USERS" && ! is_in_list "$logged_in" "$ADMIN_USERS"; then
+        echo "    Booting: $logged_in"
+        pkill -KILL -u "$logged_in"
+    fi
+done
+
+echo ""
+echo "========================================"
+echo "              DONE"
+echo "========================================"
+EOF
