@@ -1,0 +1,45 @@
+sudo tee /usr/local/bin/restore_services.sh << 'EOF'
+#!/bin/bash
+
+echo "========================================"
+echo "      SERVICE RESTORE & LOCKDOWN"
+echo "========================================"
+
+echo "[*] Cleaning dnf cache..."
+dnf clean all
+dnf makecache
+
+echo "[*] Reinstalling SSH..."
+dnf reinstall -y openssh openssh-server openssh-clients
+echo "[*] Reinstalling Samba..."
+dnf reinstall -y samba samba-client samba-common
+
+echo "[*] Enabling services..."
+systemctl enable sshd smb nmb
+
+echo "[*] Starting services..."
+systemctl start sshd
+systemctl start smb
+systemctl start nmb
+
+echo "[*] Verifying services..."
+systemctl status sshd | grep Active
+systemctl status smb  | grep Active
+systemctl status nmb  | grep Active
+
+echo "[*] Verifying ports..."
+ss -tlnp | grep -E ':22|:445|:139'
+
+echo "[*] Running SSH lockdown..."
+bash /usr/local/bin/lockdown_ssh_full.sh
+
+echo "[*] Running SMB lockdown..."
+bash /usr/local/bin/lockdown_smb.sh
+
+echo "========================================"
+echo "           RESTORE COMPLETE"
+echo "========================================"
+EOF
+
+sudo chmod +x /usr/local/bin/restore_services.sh
+sudo bash /usr/local/bin/restore_services.sh
