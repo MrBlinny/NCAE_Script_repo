@@ -1,0 +1,58 @@
+sudo tee /usr/local/bin/create_smb_files.sh << 'EOF'
+#!/bin/bash
+SHARE_DIR="/mnt/files"
+mkdir -p "$SHARE_DIR"
+
+echo "[*] Creating files with correct sizes..."
+
+# Size reference: bs=1M count=X or use exact byte counts
+# 1073741824 = 1GB
+# 524288000  = 500MB
+# 262144000  = 250MB
+# 52428800   = 50MB
+# 25165824   = 24MB
+# 10485760   = 10MB
+# 968998912  = ~924MB
+# 3116482560 = ~2.9GB
+
+dd if=/dev/urandom of="$SHARE_DIR/addict_with_a_pen.data"     bs=1M count=24    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/air_catcher.data"            bs=1M count=500   status=progress
+dd if=/dev/urandom of="$SHARE_DIR/anathema.data"               bs=1M count=500   status=progress
+dd if=/dev/urandom of="$SHARE_DIR/at_the_risk_of_feeling_dumb.data" bs=1M count=10 status=progress
+dd if=/dev/urandom of="$SHARE_DIR/backslide.data"              bs=1M count=10    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/be_concerned.data"           bs=1M count=10    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/before_you_start_your_day.data" bs=1M count=10 status=progress
+dd if=/dev/urandom of="$SHARE_DIR/bounce_man.data"             bs=1M count=50    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/car_radio.data"              bs=1M count=50    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/center_mass.data"            bs=1M count=50    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/chlorine.data"               bs=1M count=24    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/christmas_saves_the_year.data" bs=1M count=250 status=progress
+dd if=/dev/urandom of="$SHARE_DIR/city_walls.data"             bs=1M count=250   status=progress
+dd if=/dev/urandom of="$SHARE_DIR/cottonwood.data"             bs=1M count=1024  status=progress
+dd if=/dev/urandom of="$SHARE_DIR/doubt.data"                  bs=1M count=50    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/the_contract.data"           bs=1M count=924   status=progress
+dd if=/dev/urandom of="$SHARE_DIR/data_dump_1.bin"             bs=1M count=1024  status=progress
+dd if=/dev/urandom of="$SHARE_DIR/data_dump_2.bin"             bs=1M count=250   status=progress
+dd if=/dev/urandom of="$SHARE_DIR/data_dump_3.bin"             bs=1M count=50    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/datadump.bin"                bs=1M count=2972  status=progress
+dd if=/dev/urandom of="$SHARE_DIR/.bandito.data"               bs=1M count=10    status=progress
+dd if=/dev/urandom of="$SHARE_DIR/.choker.data"                bs=1M count=250   status=progress
+
+echo "[*] Setting permissions..."
+chmod 755 "$SHARE_DIR"
+chmod 644 "$SHARE_DIR"/*
+chmod 644 "$SHARE_DIR"/.bandito.data
+chmod 644 "$SHARE_DIR"/.choker.data
+
+echo "[*] Fixing SELinux..."
+semanage fcontext -a -t samba_share_t "$SHARE_DIR(/.*)?" 2>/dev/null
+restorecon -Rv "$SHARE_DIR"
+
+echo "[*] Verifying sizes..."
+ls -lah "$SHARE_DIR"
+
+echo "[*] Done."
+EOF
+
+sudo chmod +x /usr/local/bin/create_smb_files.sh
+sudo bash /usr/local/bin/create_smb_files.sh
