@@ -1,0 +1,76 @@
+sudo tee /usr/local/bin/lockdown_smb.sh << 'EOF'
+#!/bin/bash
+
+USERS="clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley"
+PASSWORD="cnyrocks"
+SHARE_DIR="/mnt/files"
+FILES="addict_with_a_pen.data air_catcher.data anathema.data at_the_risk_of_feeling_dumb.data backslide.data be_concerned.data before_you_start_your_day.data bounce_man.data doubt.data car_radio.data center_mass.data chlorine.data choker.data christmas_saves_the_year.data city_walls.data the_contract.data cottonwood.data"
+
+echo "[*] Ensuring samba is installed..."
+dnf install -y samba samba-client > /dev/null
+
+echo "[*] Creating share directory and files..."
+mkdir -p "$SHARE_DIR"
+for file in $FILES; do
+    touch "$SHARE_DIR/$file"
+done
+touch "$SHARE_DIR/.bandito.data"
+chmod 755 "$SHARE_DIR"
+chmod 644 "$SHARE_DIR"/*
+
+echo "[*] Creating/unlocking users and setting SMB passwords..."
+for user in $USERS; do
+    useradd -M -s /sbin/nologin "$user" 2>/dev/null || echo "    $user already exists"
+    usermod -U "$user"
+    echo -e "$PASSWORD\n$PASSWORD" | smbpasswd -a "$user" 2>/dev/null
+    smbpasswd -e "$user"
+    echo "    Done: $user"
+done
+
+echo "[*] Writing smb.conf..."
+cat > /etc/samba/smb.conf << SMBEOF
+[global]
+    workgroup = WORKGROUP
+    server string = Samba Server
+    netbios name = samba
+    security = user
+    passdb backend = tdbsam
+    log file = /var/log/samba/log.%m
+    max log size = 50
+    dns proxy = no
+
+[files]
+    path = /mnt/files
+    browseable = yes
+    writable = no
+    valid users = clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley
+    read only = yes
+    guest ok = no
+    create mask = 0644
+    directory mask = 0755
+SMBEOF
+
+echo "[*] Fixing SELinux context..."
+semanage fcontext -a -t samba_share_t "/mnt/files(/.*)?" 2>/dev/null
+restorecon -Rv /mnt/files
+
+echo "[*] Fixing firewall..."
+firewall-cmd --permanent --add-service=samba
+firewall-cmd --reload
+
+echo "[*] Restarting SMB..."
+systemctl enable smb nmb
+systemctl restart smb nmb
+systemctl status smb nmb | grep -E "Active|running"
+
+echo "[*] Verifying files exist..."
+ls -la "$SHARE_DIR"
+
+echo "[*] Testing SMB login..."
+smbclient //localhost/files -U clancy%"$PASSWORD" -c "ls" 2>&1 | head -5
+
+echo "[*] Done."
+EOF
+
+sudo chmod +x /usr/local/bin/lockdown_smb.sh
+sudo bash /usr/local/bin/lockdown_smb.sh
