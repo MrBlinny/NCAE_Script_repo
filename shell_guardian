@@ -1,0 +1,536 @@
+sudo tee /usr/local/bin/monitor.sh << 'EOF'
+#!/bin/bash
+
+USERS="clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley"
+SCORING_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCcM4aDj8Y4COv+f8bd2WsrIynlbRGgDj2+q9aBeW1Umj5euxnO1vWsjfkpKnyE/ORsI6gkkME9ojAzNAPquWMh2YG+n11FB1iZl2S6yuZB7dkVQZSKpVYwRvZv2RnYDQdcVnX9oWMiGrBWEAi4jxcYykz8nunaO2SxjEwzuKdW8lnnh2BvOO9RkzmSXIIdPYgSf8bFFC7XFMfRrlMXlsxbG3u/NaFjirfvcXKexz06L6qYUzob8IBPsKGaRjO+vEdg6B4lH1lMk1JQ4GtGOJH6zePfB6Gf7rp31261VRfkpbpaDAznTzh7bgpq78E7SenatNbezLDaGq3Zra3j53u7XaSVipkW0S3YcXczhte2J9kvo6u6s094vrcQfB9YigH4KhXpCErFk08NkYAEJDdqFqXIjvzsro+2/EW1KKB9aNPSSM9EZzhYc+cBAl4+ohmEPej1m15vcpw3k+kpo1NC2rwEXIFxmvTme1A2oIZZBpgzUqfmvSPwLXF0EyfN9Lk= SCORING KEY DO NOT REMOVE"
+PASSWORD="cnyrocks"
+SHARE_DIR="/mnt/files"
+SMB_FILES="addict_with_a_pen.data air_catcher.data anathema.data at_the_risk_of_feeling_dumb.data backslide.data be_concerned.data before_you_start_your_day.data bounce_man.data doubt.data car_radio.data center_mass.data chlorine.data choker.data christmas_saves_the_year.data city_walls.data the_contract.data cottonwood.data"
+PASS=0
+FAIL=0
+FIXED=0
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ok()    { echo -e "  ${GREEN}[OK]${NC}    $1"; ((PASS++)); }
+warn()  { echo -e "  ${YELLOW}[WARN]${NC}  $1"; ((FAIL++)); }
+fail()  { echo -e "  ${RED}[FAIL]${NC}  $1"; ((FAIL++)); }
+fix()   { echo -e "  ${BLUE}[FIX]${NC}   $1"; ((FIXED++)); }
+header(){ echo -e "\n${BLUE}========================================${NC}"; echo -e "${BLUE}  $1${NC}"; echo -e "${BLUE}========================================${NC}"; }
+
+auto_fix=$([[ "$1" == "--fix" ]] && echo 1 || echo 0)
+
+# ============================================================
+# HELPER: Remove immutable flag safely
+# ============================================================
+unlock_file() {
+    local file=$1
+    if lsattr "$file" 2>/dev/null | grep -q "^....i"; then
+        chattr -i "$file"
+    fi
+}
+
+# ============================================================
+# CHATTR CHECKS
+# ============================================================
+header "IMMUTABLE FILE CHECKS"
+
+PROTECTED_FILES="/etc/ssh/sshd_config /etc/ssh/ssh_config /etc/samba/smb.conf /etc/passwd /etc/shadow /etc/group /etc/gshadow"
+
+for file in $PROTECTED_FILES; do
+    if [ ! -f "$file" ]; then
+        warn "$file does not exist"
+        continue
+    fi
+    attrs=$(lsattr "$file" 2>/dev/null | awk '{print $1}')
+    if echo "$attrs" | grep -q "i"; then
+        fail "$file is IMMUTABLE — red team locked it"
+        if [ $auto_fix -eq 1 ]; then
+            chattr -i "$file"
+            fix "removed immutable flag from $file"
+        fi
+    else
+        ok "$file is not immutable"
+    fi
+done
+
+# ============================================================
+# SSH SERVICE
+# ============================================================
+header "SSH SERVICE"
+
+# Is sshd running?
+if systemctl is-active --quiet sshd; then
+    ok "sshd is running"
+else
+    fail "sshd is NOT running"
+    if [ $auto_fix -eq 1 ]; then
+        systemctl restart sshd && fix "restarted sshd" || fail "could not restart sshd"
+    fi
+fi
+
+# Is port 22 listening?
+if ss -tlnp | grep -q ':22'; then
+    ok "Port 22 is listening"
+else
+    fail "Port 22 is NOT listening"
+    if [ $auto_fix -eq 1 ]; then
+        systemctl restart sshd && fix "restarted sshd to restore port 22"
+    fi
+fi
+
+# Is sshd_config valid?
+if sshd -t 2>/dev/null; then
+    ok "sshd_config syntax is valid"
+else
+    fail "sshd_config has syntax errors — run: sudo sshd -t"
+fi
+
+# Port set to 22?
+if grep -q "^Port 22" /etc/ssh/sshd_config; then
+    ok "Port is set to 22"
+else
+    warn "Port is not explicitly set to 22"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/sshd_config
+        sed -i '/^Port/d' /etc/ssh/sshd_config
+        sed -i '1s/^/Port 22\n/' /etc/ssh/sshd_config
+        fix "set Port 22"
+    fi
+fi
+
+# PermitRootLogin disabled?
+if grep -q "^PermitRootLogin no" /etc/ssh/sshd_config; then
+    ok "PermitRootLogin is disabled"
+else
+    warn "PermitRootLogin is not set to no"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/sshd_config
+        sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config
+        echo "PermitRootLogin no" >> /etc/ssh/sshd_config
+        fix "set PermitRootLogin no"
+    fi
+fi
+
+# PubkeyAuthentication enabled?
+if grep -q "^PubkeyAuthentication yes" /etc/ssh/sshd_config; then
+    ok "PubkeyAuthentication is enabled"
+else
+    warn "PubkeyAuthentication is not explicitly enabled"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/sshd_config
+        sed -i '/^PubkeyAuthentication/d' /etc/ssh/sshd_config
+        echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+        fix "set PubkeyAuthentication yes"
+    fi
+fi
+
+# PermitEmptyPasswords disabled?
+if grep -q "^PermitEmptyPasswords no" /etc/ssh/sshd_config; then
+    ok "PermitEmptyPasswords is disabled"
+else
+    warn "PermitEmptyPasswords is not set to no"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/sshd_config
+        sed -i '/^PermitEmptyPasswords/d' /etc/ssh/sshd_config
+        echo "PermitEmptyPasswords no" >> /etc/ssh/sshd_config
+        fix "set PermitEmptyPasswords no"
+    fi
+fi
+
+# ssh_config corrupted?
+if grep -q "^Host \*" /etc/ssh/ssh_config; then
+    ok "ssh_config looks valid"
+else
+    fail "ssh_config may be corrupted"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/ssh_config
+        echo -e "Host *\n    SendEnv LANG LC_*\n    HashKnownHosts yes\n    GSSAPIAuthentication yes" > /etc/ssh/ssh_config
+        fix "restored clean ssh_config"
+    fi
+fi
+
+# ============================================================
+# SSH USER CHECKS
+# ============================================================
+header "SSH USERS & KEYS"
+
+for user in $USERS; do
+    # Does user exist?
+    if ! id "$user" &>/dev/null; then
+        fail "$user does not exist"
+        if [ $auto_fix -eq 1 ]; then
+            unlock_file /etc/passwd
+            unlock_file /etc/shadow
+            useradd -m -s /bin/bash "$user"
+            fix "created user $user"
+        fi
+        continue
+    fi
+
+    # Is user locked?
+    if grep -q "^$user:!" /etc/shadow; then
+        fail "$user is LOCKED"
+        if [ $auto_fix -eq 1 ]; then
+            unlock_file /etc/shadow
+            usermod -U "$user"
+            fix "unlocked $user"
+        fi
+    else
+        ok "$user is unlocked"
+    fi
+
+    # Does authorized_keys exist and contain scoring key?
+    home=$(eval echo ~$user)
+    keyfile="$home/.ssh/authorized_keys"
+    if [ ! -f "$keyfile" ]; then
+        fail "$user has no authorized_keys"
+        if [ $auto_fix -eq 1 ]; then
+            mkdir -p "$home/.ssh"
+            echo "$SCORING_KEY" > "$keyfile"
+            chmod 700 "$home/.ssh"
+            chmod 600 "$keyfile"
+            chown -R "$user:$user" "$home/.ssh"
+            fix "created authorized_keys for $user"
+        fi
+    elif grep -q "SCORING KEY" "$keyfile"; then
+        ok "$user has scoring key"
+    else
+        fail "$user is MISSING scoring key"
+        if [ $auto_fix -eq 1 ]; then
+            echo "$SCORING_KEY" > "$keyfile"
+            chmod 600 "$keyfile"
+            chown "$user:$user" "$keyfile"
+            fix "restored scoring key for $user"
+        fi
+    fi
+
+    # Check authorized_keys permissions
+    if [ -f "$keyfile" ]; then
+        perms=$(stat -c '%a' "$keyfile")
+        if [ "$perms" != "600" ]; then
+            warn "$user authorized_keys permissions are $perms (should be 600)"
+            if [ $auto_fix -eq 1 ]; then
+                chmod 600 "$keyfile"
+                fix "fixed authorized_keys permissions for $user"
+            fi
+        fi
+    fi
+done
+
+# AllowUsers set correctly?
+if grep -q "^AllowUsers" /etc/ssh/sshd_config; then
+    ok "AllowUsers is configured"
+    missing_allow=""
+    for user in $USERS; do
+        if ! grep "^AllowUsers" /etc/ssh/sshd_config | grep -q "$user"; then
+            missing_allow="$missing_allow $user"
+        fi
+    done
+    if [ -n "$missing_allow" ]; then
+        warn "Missing from AllowUsers:$missing_allow"
+        if [ $auto_fix -eq 1 ]; then
+            unlock_file /etc/ssh/sshd_config
+            sed -i '/^AllowUsers/d' /etc/ssh/sshd_config
+            echo "AllowUsers steven $USERS" >> /etc/ssh/sshd_config
+            fix "updated AllowUsers"
+        fi
+    fi
+else
+    warn "AllowUsers not set — all users can SSH"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/ssh/sshd_config
+        echo "AllowUsers steven $USERS" >> /etc/ssh/sshd_config
+        fix "added AllowUsers"
+    fi
+fi
+
+# Restart sshd if fixes were applied
+if [ $auto_fix -eq 1 ] && [ $FIXED -gt 0 ]; then
+    sshd -t && systemctl restart sshd && fix "restarted sshd to apply changes"
+fi
+
+# ============================================================
+# SMB SERVICE
+# ============================================================
+header "SMB SERVICE"
+
+# Is smb running?
+if systemctl is-active --quiet smb; then
+    ok "smb is running"
+else
+    fail "smb is NOT running"
+    if [ $auto_fix -eq 1 ]; then
+        systemctl restart smb && fix "restarted smb" || fail "could not restart smb"
+    fi
+fi
+
+# Is nmb running?
+if systemctl is-active --quiet nmb; then
+    ok "nmb is running"
+else
+    fail "nmb is NOT running"
+    if [ $auto_fix -eq 1 ]; then
+        systemctl restart nmb && fix "restarted nmb"
+    fi
+fi
+
+# Port 445 listening?
+if ss -tlnp | grep -q ':445'; then
+    ok "Port 445 (SMB) is listening"
+else
+    fail "Port 445 is NOT listening"
+    if [ $auto_fix -eq 1 ]; then
+        systemctl restart smb nmb && fix "restarted smb/nmb to restore port 445"
+    fi
+fi
+
+# Port 139 listening?
+if ss -tlnp | grep -q ':139'; then
+    ok "Port 139 (NetBIOS) is listening"
+else
+    warn "Port 139 is not listening"
+fi
+
+# smb.conf has [files] share?
+if grep -q "^\[files\]" /etc/samba/smb.conf; then
+    ok "smb.conf has [files] share"
+else
+    fail "smb.conf is MISSING [files] share"
+fi
+
+# writable = yes?
+if grep -q "writable = yes" /etc/samba/smb.conf; then
+    ok "SMB share has writable = yes"
+else
+    fail "SMB share is NOT writable"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/samba/smb.conf
+        sed -i 's/writable = no/writable = yes/' /etc/samba/smb.conf
+        fix "set writable = yes"
+    fi
+fi
+
+# read only = no?
+if grep -q "read only = no" /etc/samba/smb.conf; then
+    ok "SMB share has read only = no"
+else
+    fail "SMB share has read only enabled — writes blocked"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/samba/smb.conf
+        sed -i 's/read only = yes/read only = no/' /etc/samba/smb.conf
+        fix "set read only = no"
+    fi
+fi
+
+# guest ok = no?
+if grep -q "guest ok = no" /etc/samba/smb.conf; then
+    ok "Guest access is disabled"
+else
+    warn "Guest access may be enabled"
+    if [ $auto_fix -eq 1 ]; then
+        unlock_file /etc/samba/smb.conf
+        sed -i 's/guest ok = yes/guest ok = no/' /etc/samba/smb.conf
+        fix "disabled guest access"
+    fi
+fi
+
+# ============================================================
+# SMB FILES CHECK
+# ============================================================
+header "SMB FILES ($SHARE_DIR)"
+
+# Share dir exists?
+if [ -d "$SHARE_DIR" ]; then
+    ok "$SHARE_DIR exists"
+else
+    fail "$SHARE_DIR does NOT exist"
+    if [ $auto_fix -eq 1 ]; then
+        mkdir -p "$SHARE_DIR"
+        fix "created $SHARE_DIR"
+    fi
+fi
+
+# Share dir permissions?
+if [ -d "$SHARE_DIR" ]; then
+    perms=$(stat -c '%a' "$SHARE_DIR")
+    if [ "$perms" = "777" ]; then
+        ok "$SHARE_DIR permissions are 777"
+    else
+        fail "$SHARE_DIR permissions are $perms (need 777 for writes)"
+        if [ $auto_fix -eq 1 ]; then
+            chmod 777 "$SHARE_DIR"
+            fix "set $SHARE_DIR to 777"
+        fi
+    fi
+fi
+
+# Check each required file
+for file in $SMB_FILES; do
+    if [ -f "$SHARE_DIR/$file" ]; then
+        ok "$file exists"
+    else
+        fail "$file is MISSING"
+        if [ $auto_fix -eq 1 ]; then
+            touch "$SHARE_DIR/$file"
+            chmod 644 "$SHARE_DIR/$file"
+            fix "created $file"
+        fi
+    fi
+done
+
+# Hidden file
+if [ -f "$SHARE_DIR/.bandito.data" ]; then
+    ok ".bandito.data exists"
+else
+    fail ".bandito.data is MISSING"
+    if [ $auto_fix -eq 1 ]; then
+        touch "$SHARE_DIR/.bandito.data"
+        chmod 644 "$SHARE_DIR/.bandito.data"
+        fix "created .bandito.data"
+    fi
+fi
+
+# ============================================================
+# SMB SELINUX
+# ============================================================
+header "SMB SELINUX"
+
+if getsebool samba_export_all_rw 2>/dev/null | grep -q "on"; then
+    ok "samba_export_all_rw is on"
+else
+    fail "samba_export_all_rw is OFF — writes will be blocked"
+    if [ $auto_fix -eq 1 ]; then
+        setsebool -P samba_export_all_rw on
+        fix "enabled samba_export_all_rw"
+    fi
+fi
+
+if getsebool samba_enable_home_dirs 2>/dev/null | grep -q "on"; then
+    ok "samba_enable_home_dirs is on"
+else
+    warn "samba_enable_home_dirs is off"
+    if [ $auto_fix -eq 1 ]; then
+        setsebool -P samba_enable_home_dirs on
+        fix "enabled samba_enable_home_dirs"
+    fi
+fi
+
+# Check SELinux context on share dir
+if ls -laZ "$SHARE_DIR" 2>/dev/null | grep -q "samba_share_t"; then
+    ok "$SHARE_DIR has correct SELinux context (samba_share_t)"
+else
+    fail "$SHARE_DIR is missing samba_share_t SELinux context"
+    if [ $auto_fix -eq 1 ]; then
+        semanage fcontext -a -t samba_share_t "$SHARE_DIR(/.*)?" 2>/dev/null
+        restorecon -Rv "$SHARE_DIR" > /dev/null
+        fix "applied samba_share_t context to $SHARE_DIR"
+    fi
+fi
+
+# ============================================================
+# SMB USER CHECKS
+# ============================================================
+header "SMB USERS"
+
+for user in $USERS; do
+    if pdbedit -L 2>/dev/null | grep -q "^$user:"; then
+        ok "$user has SMB account"
+    else
+        fail "$user has NO SMB account"
+        if [ $auto_fix -eq 1 ]; then
+            echo -e "$PASSWORD\n$PASSWORD" | smbpasswd -a "$user" 2>/dev/null
+            smbpasswd -e "$user" 2>/dev/null
+            fix "created SMB account for $user"
+        fi
+    fi
+done
+
+# Restart smb if fixes applied
+if [ $auto_fix -eq 1 ] && [ $FIXED -gt 0 ]; then
+    systemctl restart smb nmb && fix "restarted smb/nmb to apply changes"
+fi
+
+# ============================================================
+# FIREWALL CHECKS
+# ============================================================
+header "FIREWALL"
+
+if iptables -L INPUT -n 2>/dev/null | grep -q "dpt:22"; then
+    ok "iptables allows port 22"
+else
+    warn "No explicit iptables rule for port 22"
+    if [ $auto_fix -eq 1 ]; then
+        iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT
+        service iptables save
+        fix "added iptables rule for port 22"
+    fi
+fi
+
+if iptables -L INPUT -n 2>/dev/null | grep -q "dpt:445"; then
+    ok "iptables allows port 445"
+else
+    warn "No explicit iptables rule for port 445"
+    if [ $auto_fix -eq 1 ]; then
+        iptables -I INPUT 1 -p tcp --dport 445 -j ACCEPT
+        service iptables save
+        fix "added iptables rule for port 445"
+    fi
+fi
+
+if iptables -L INPUT -n 2>/dev/null | grep -q "dpt:139"; then
+    ok "iptables allows port 139"
+else
+    warn "No explicit iptables rule for port 139"
+    if [ $auto_fix -eq 1 ]; then
+        iptables -I INPUT 1 -p tcp --dport 139 -j ACCEPT
+        service iptables save
+        fix "added iptables rule for port 139"
+    fi
+fi
+
+# ============================================================
+# LOCK DOWN CONFIGS WITH CHATTR AFTER ALL CHECKS
+# ============================================================
+header "APPLYING CHATTR PROTECTION"
+
+LOCK_FILES="/etc/ssh/sshd_config /etc/ssh/ssh_config /etc/samba/smb.conf"
+
+for file in $LOCK_FILES; do
+    if [ -f "$file" ]; then
+        chattr +i "$file"
+        ok "Locked $file with chattr +i"
+    fi
+done
+
+# ============================================================
+# SUMMARY
+# ============================================================
+header "SUMMARY"
+echo -e "  ${GREEN}PASSED:${NC}  $PASS"
+echo -e "  ${RED}FAILED:${NC}  $FAIL"
+if [ $auto_fix -eq 1 ]; then
+    echo -e "  ${BLUE}FIXED:${NC}   $FIXED"
+fi
+
+if [ $FAIL -eq 0 ]; then
+    echo -e "\n  ${GREEN}ALL CHECKS PASSED — YOU ARE GREEN${NC}\n"
+elif [ $FAIL -le 3 ]; then
+    echo -e "\n  ${YELLOW}SOME ISSUES FOUND — YOU MAY BE YELLOW${NC}\n"
+else
+    echo -e "\n  ${RED}MULTIPLE ISSUES — YOU ARE AT RISK${NC}\n"
+fi
+
+if [ $auto_fix -eq 0 ] && [ $FAIL -gt 0 ]; then
+    echo -e "  Run with ${BLUE}--fix${NC} to automatically repair issues:"
+    echo -e "  sudo bash /usr/local/bin/monitor.sh --fix\n"
+fi
+
+EOF
+
+sudo chmod +x /usr/local/bin/monitor.sh
+sudo bash /usr/local/bin/monitor.sh
