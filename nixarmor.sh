@@ -45,40 +45,11 @@ harden_apache() {
     fi
 }
 
-nuke_compilers() {
-    echo "[*] Nuking Compilers (rm -f)..."
-    # No package managers. Just deletion.
-    rm -f /usr/bin/gcc* /usr/bin/g++* /usr/bin/cc /usr/bin/make /usr/bin/cmake /usr/bin/clang*
-    rm -f /usr/bin/byacc /usr/bin/yacc /usr/bin/bcc /usr/bin/kgcc
-}
-
-nuke_hackertools() {
-    echo "[*] Nuking Hacker Tools..."
-    # Common tools Red Team uses that you probably don't need
-    rm -f /usr/bin/nc /usr/bin/netcat /usr/bin/ncat /usr/bin/socat
-    rm -f /usr/bin/nmap /usr/bin/zenmap
-    rm -f /usr/bin/wireshark /usr/bin/tshark
-    rm -f /usr/bin/telnet
-    # Be careful with these two, remove if you need them:
-    # rm -f /usr/bin/wget /usr/bin/curl 
-}
-
-apply_fileperms() {
-    echo "[*] Applying fileperms.txt..."
-    if [ -f "fileperms.txt" ]; then
-        # Piping directly to bash as requested
-        cat fileperms.txt | bash 2>/dev/null
-    else
-        echo " [!] fileperms.txt missing!"
-    fi
-}
 
 main() {
     harden_php
     harden_apache
-    nuke_compilers
-    nuke_hackertools
-    apply_fileperms
+    
     echo "[+] Done."
 }
 
