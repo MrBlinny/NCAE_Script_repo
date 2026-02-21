@@ -1,0 +1,56 @@
+sudo tee /etc/ssh/sshd_config << 'EOF'
+# === NCAE COMPETITION - HARDENED SSHD CONFIG ===
+
+# Network
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+# Protocol
+Protocol 2
+
+# Host Keys
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Authentication
+LoginGraceTime 30
+PermitRootLogin no
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 5
+
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# Disable unused auth methods
+KerberosAuthentication no
+GSSAPIAuthentication no
+UsePAM yes
+
+# Restrictions
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+PrintMotd no
+PrintLastLog yes
+
+# Keepalive
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Logging
+SyslogFacility AUTHPRIV
+LogLevel VERBOSE
+
+# Allowed users
+AllowUsers steven clancy todd_k torch_bearer ned trash blurry_face nico keons sacarvo listo lisdn reisdro vetomo nills vialists simone_weil henri_cartan claude_chevalley
+
+# Subsystems
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
